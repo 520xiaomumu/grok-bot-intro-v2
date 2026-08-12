@@ -436,6 +436,7 @@
       var btnPause = document.getElementById("btnPause");
       var narration = document.getElementById("narration");
       var chapterStarts = [0, 14, 26, 44, 62, 77, 89, 114, 139, 164];
+      var seekGen = 0;
       function pad(n) { return n < 10 ? "0" + n : String(n); }
       function clearTimer() {
         if (timer) { clearTimeout(timer); timer = null; }
@@ -449,34 +450,64 @@
           try { narration.pause(); } catch (e) {}
         }
       }
+      function waitMetadata(gen, done) {
+        if (!narration) return;
+        if (gen !== seekGen) return;
+        if (narration.readyState >= 1) {
+          done();
+          return;
+        }
+        var finished = false;
+        var tid = null;
+        function cleanup() {
+          narration.removeEventListener("loadedmetadata", onReady);
+          narration.removeEventListener("loadeddata", onReady);
+          narration.removeEventListener("canplay", onReady);
+          if (tid) clearTimeout(tid);
+        }
+        function onReady() {
+          if (finished) return;
+          finished = true;
+          cleanup();
+          if (gen !== seekGen) return;
+          done();
+        }
+        narration.addEventListener("loadedmetadata", onReady, { once: true });
+        narration.addEventListener("loadeddata", onReady, { once: true });
+        narration.addEventListener("canplay", onReady, { once: true });
+        tid = setTimeout(onReady, 1200);
+      }
+      function seekToTime(t, shouldPlay) {
+        if (!narration) return;
+        seekGen += 1;
+        var gen = seekGen;
+        var target = Number(t) || 0;
+        if (target < 0) target = 0;
+        waitMetadata(gen, function () {
+          if (gen !== seekGen) return;
+          try {
+            if (Math.abs((narration.currentTime || 0) - target) > 0.12) {
+              narration.currentTime = target;
+            }
+          } catch (e) {}
+          if (gen !== seekGen) return;
+          if (paused || !shouldPlay) {
+            pauseNarration();
+            return;
+          }
+          var p = narration.play();
+          if (p && p.catch) p.catch(function () {});
+        });
+      }
       function playNarrationFromChapter(i, extraOffset) {
         if (!narration) return;
         var t = offsetSec(i) + (extraOffset || 0);
-        try {
-          if (Math.abs((narration.currentTime || 0) - t) > 0.12) {
-            narration.currentTime = t;
-          }
-        } catch (e) {}
-        if (paused) {
-          pauseNarration();
-          return;
-        }
-        var p = narration.play();
-        if (p && p.catch) p.catch(function () {});
+        seekToTime(t, !paused);
       }
       function unlockAudio() {
         if (!narration) return;
         var t = offsetSec(idx) + (paused ? (pageMs - remainMs) / 1000 : (timer ? (Date.now() - startedAt) / 1000 : 0));
-        var p = narration.play();
-        if (p && p.then) {
-          p.then(function () {
-            try { narration.currentTime = t; } catch (e) {}
-            if (paused) pauseNarration();
-          }).catch(function () {});
-        } else {
-          try { narration.currentTime = t; } catch (e) {}
-          if (paused) pauseNarration();
-        }
+        seekToTime(t, !paused);
       }
       document.addEventListener("pointerdown", unlockAudio, { once: true });
       document.addEventListener("keydown", unlockAudio, { once: true });
@@ -549,7 +580,7 @@
           updatePauseUi();
           var elapsedSec = (pageMs - remainMs) / 1000;
           if (elapsedSec < 0) elapsedSec = 0;
-          playNarrationFromChapter(idx, elapsedSec);
+          seekToTime(offsetSec(idx) + elapsedSec, true);
           if (idx >= total - 1) return;
           var resumeMs = remainMs > 0 ? remainMs : pageMs;
           schedule(resumeMs);
@@ -577,7 +608,6 @@
         if (dy < 0) next(); else prev();
       }, { passive: true });
       show(0);
-    })();
     })();
   </script>
 </body>
