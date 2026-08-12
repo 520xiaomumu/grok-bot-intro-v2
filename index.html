@@ -440,42 +440,97 @@
       function clearTimer() {
         if (timer) { clearTimeout(timer); timer = null; }
       }
+      var seekGen = 0;
       function offsetSec(i) {
         var n = typeof i === "number" ? i : idx;
         return chapterStarts[n] || 0;
       }
-      function pauseNarration() {
-        if (narration) {
-          try { narration.pause(); } catch (e) {}
+      function waitMetadata(cb) {
+        if (!narration) { cb(); return; }
+        if (narration.readyState >= 1) { cb(); return; }
+        var done = false;
+        function finish() {
+          if (done) return;
+          done = true;
+          narration.removeEventListener("loadedmetadata", onMeta);
+          clearTimeout(tid);
+          cb();
         }
+        function onMeta() { finish(); }
+        narration.addEventListener("loadedmetadata", onMeta);
+        try {
+          if (narration.readyState < 1) narration.load();
+        } catch (e) {}
+        var tid = setTimeout(finish, 2000);
+      }
+      function seekToTime(t, shouldPlay) {
+        if (!narration) return;
+        var myGen = ++seekGen;
+        waitMetadata(function () {
+          if (myGen !== seekGen) return;
+          try { narration.pause(); } catch (e) {}
+          var settled = false;
+          var retried = false;
+          var fallbackTid = null;
+          function cleanup() {
+            narration.removeEventListener("seeked", onSeeked);
+            if (fallbackTid != null) { clearTimeout(fallbackTid); fallbackTid = null; }
+          }
+          function applyPlayPause() {
+            if (myGen !== seekGen) return;
+            if (shouldPlay && !paused) {
+              var p = narration.play();
+              if (p && p.catch) p.catch(function () {});
+            } else {
+              try { narration.pause(); } catch (e) {}
+            }
+          }
+          function afterSeek() {
+            if (settled || myGen !== seekGen) return;
+            var cur = narration.currentTime || 0;
+            if (Math.abs(cur - t) > 0.3 && !retried) {
+              retried = true;
+              try { narration.currentTime = t; } catch (e2) {}
+              if (fallbackTid != null) clearTimeout(fallbackTid);
+              fallbackTid = setTimeout(afterSeek, 500);
+              return;
+            }
+            settled = true;
+            cleanup();
+            applyPlayPause();
+          }
+          function onSeeked() { afterSeek(); }
+          narration.addEventListener("seeked", onSeeked);
+          fallbackTid = setTimeout(afterSeek, 500);
+          try {
+            narration.currentTime = t;
+          } catch (e) {
+            afterSeek();
+          }
+        });
       }
       function playNarrationFromChapter(i, extraOffset) {
         if (!narration) return;
-        var t = offsetSec(i) + (extraOffset || 0);
-        try {
-          if (Math.abs((narration.currentTime || 0) - t) > 0.12) {
-            narration.currentTime = t;
-          }
-        } catch (e) {}
-        if (paused) {
-          pauseNarration();
-          return;
+        var t = (chapterStarts[i] || 0) + (extraOffset || 0);
+        seekToTime(t, !paused);
+      }
+      function pauseNarration() {
+        seekGen++;
+        if (narration) {
+          try { narration.pause(); } catch (e) {}
         }
-        var p = narration.play();
-        if (p && p.catch) p.catch(function () {});
       }
       function unlockAudio() {
         if (!narration) return;
         var t = offsetSec(idx) + (paused ? (pageMs - remainMs) / 1000 : (timer ? (Date.now() - startedAt) / 1000 : 0));
         var p = narration.play();
+        function afterUnlock() {
+          seekToTime(t, !paused);
+        }
         if (p && p.then) {
-          p.then(function () {
-            try { narration.currentTime = t; } catch (e) {}
-            if (paused) pauseNarration();
-          }).catch(function () {});
+          p.then(afterUnlock).catch(afterUnlock);
         } else {
-          try { narration.currentTime = t; } catch (e) {}
-          if (paused) pauseNarration();
+          afterUnlock();
         }
       }
       document.addEventListener("pointerdown", unlockAudio, { once: true });
@@ -577,7 +632,6 @@
         if (dy < 0) next(); else prev();
       }, { passive: true });
       show(0);
-    })();
     })();
   </script>
 </body>
